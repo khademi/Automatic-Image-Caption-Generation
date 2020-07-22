@@ -94,7 +94,6 @@ Run tf-icg-train.py
        
   
   
-
 **Directory Tree**  
 .  
 ├── code  
