@@ -2,7 +2,6 @@ import tensorflow as tf
 from tensorflow.python.layers.core import Dense
 import numpy
 
-
 BEAM_WIDTH = 25
 VISUAL_CONCEPT_SIZE = 1000
 class ICG_model:
@@ -400,6 +399,7 @@ class ICG_model_grid:
         b_grid = tf.Variable(tf.zeros([grid_emb_size]))
         feat_batch_proj = tf.tensordot(grid_feat_batch, W_grid, [[2], [0]]
                                        ) + b_grid  # B x (grid_size * grid_size) x grid_emb_size
+        feat_batch_proj = tf.nn.dropout(feat_batch_proj, keep_prob=dropout_keep_rate)
         
         grid_lstm_cell = grid_rnn.Grid2LSTMCell(grid_emb_size, use_peepholes=True,
                                                 output_is_tuple=True, state_is_tuple=True)
@@ -589,5 +589,4 @@ class ICG_model_grid:
     @property
     def _all_att_weights(self):
         return (self.__all_att_weights)    
-    
     
