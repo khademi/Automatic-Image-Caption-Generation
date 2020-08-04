@@ -17,9 +17,8 @@ def make_count_dict(data_type: str, count_dict: dict) -> dict:
             if not w in count_dict:   
                 count_dict[w] = 1
             else:
-                count_dict[w] = count_dict[w] + 1
+                count_dict[w] += 1
     return count_dict
-
 
 def make_vocab() -> dict:
     count_dict = {}
@@ -39,4 +38,3 @@ def make_vocab() -> dict:
 
 if __name__ == '__main__':
   _ = make_vocab()
-
