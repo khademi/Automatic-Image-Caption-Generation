@@ -55,7 +55,7 @@ All the codes are written in Python 3.
 
 1- Go to the code directory
 
-2- Run caption_coco001.py
+2- Run caption_coco.py
 
   * This will create a dictionary of all the words in the data folder.
 
