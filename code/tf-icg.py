@@ -6,7 +6,7 @@ import numpy
 import pickle
 import json
 from nltk.tokenize import RegexpTokenizer
-tokenizer = RegexpTokenizer(r'\w+')
+tokenizer = RegexpTokenizer('\w+')
 
 feat_dir = "../data/res-feat/"
 f = open('../data/coco_dict.pickle','rb')
