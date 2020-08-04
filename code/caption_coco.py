@@ -1,6 +1,6 @@
 import json
 from nltk.tokenize import RegexpTokenizer
-tokenizer = RegexpTokenizer(r'\w+')
+tokenizer = RegexpTokenizer('\w+')
 # A ``RegexpTokenizer`` splits a string into substrings using a regular expression.
 """ To preprocess the captions with basic tokenization by converting all sentences 
 to lower case, throwing away non-alphanumeric characters we follow the following paper: 
