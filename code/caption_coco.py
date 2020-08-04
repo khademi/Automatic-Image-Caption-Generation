@@ -1,6 +1,14 @@
 import json
 from nltk.tokenize import RegexpTokenizer
 tokenizer = RegexpTokenizer(r'\w+')
+# A ``RegexpTokenizer`` splits a string into substrings using a regular expression.
+""" To preprocess the captions with basic tokenization by converting all sentences 
+to lower case, throwing away non-alphanumeric characters we follow the following paper: 
+    
+A. Karpathy and L. Fei-Fei. Deep visual-semantic alignments for generating image
+descriptions. In Proceedings of the IEEE Conference on Computer Vision and Pattern
+Recognition, pages 3128-3137, 2015.
+"""
 import pickle
 
 def make_count_dict(data_type: str, count_dict: dict) -> dict:    
@@ -26,8 +34,9 @@ def make_vocab() -> dict:
     count_dict = make_count_dict('val2014', count_dict)  
     coco_dict = {'<START>': 0, '<STOP>': 1, '<UNKNOWN>': 2}
     word_id = 3
+    # filtering the words to those that occur at least 5 times in the training set:
     for w in count_dict:
-        if count_dict[w] >= 8:
+        if count_dict[w] >= 5:
               coco_dict[w] = word_id
               word_id += 1   
     print("The size of the dictionary is:", len(coco_dict))   
