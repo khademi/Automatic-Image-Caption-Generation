@@ -57,6 +57,7 @@ All the codes are written in Python 3.
 
 2- Run create_vocab.py
 
+      python create_vocab.py
   * This will create a dictionary of all the words in the data folder.
 
 3- Go to the matlab directory and run res-feat.m
