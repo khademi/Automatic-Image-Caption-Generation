@@ -50,7 +50,7 @@ if hyperparameters['model'] == 'att_icg':
 if hyperparameters['model'] == 'grid_icg':
     features = {'grid_feat': tf.placeholder(
         tf.float32, [None, grid_feat_dim * grid_size * grid_size]),
-                'pb': tf.placeholder(tf.float32, [None, VISUAL_CONCEPT_SIZE])}
+                'visual_concept': tf.placeholder(tf.float32, [None, VISUAL_CONCEPT_SIZE])}
     model = ICG_model_grid(features, hyperparameters, is_train=False)
     DIR = "../model/grid_icg"
     grid_feat_batch = model._grid_feat_batch
