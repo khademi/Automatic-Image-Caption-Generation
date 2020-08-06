@@ -55,16 +55,16 @@ All the codes are written in Python 3.
 
 1- Go to the code directory
 
-2- Run caption_coco.py
+2- Run create_vocab.py
 
   * This will create a dictionary of all the words in the data folder.
 
 3- Go to the matlab directory and run res-feat.m
 
-4- Run tf-icg.py
+4- Run create_tfrecord.py
 
-      python tf-icg.py
-  * This will create a tf record.
+      python create_tfrecord.py
+  * This will create a tf_record file.
 
 **Training**
 
