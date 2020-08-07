@@ -7,13 +7,16 @@ import pickle
 import math
 import json
 
-image_names = os.listdir('../data/images/val2014/')
+image_names = os.listdir('../data/images/test2015/')
+VISUAL_CONCEPT_SIZE = 1000
+# load dictionary:
 f = open('../data/coco_dict.pickle','rb')
 coco_dict = pickle.load(f)
 f.close()
 
-VISUAL_CONCEPT_SIZE = 1000
-coco_dict_rev = {}
+# building coco_dict_rev: converts word ids to words ( keys are word ids
+# and values are words)
+coco_dict_rev = {}  
 for key, value in coco_dict.items():
     coco_dict_rev[value] = key
 
@@ -27,25 +30,26 @@ batch_size = hyperparameters['batch_size']
 grid_feat_dim = hyperparameters['grid_feat_dim']
 grid_size = hyperparameters['grid_size']
 
+# load the trained model:
 if hyperparameters['model'] == 'icg':    
     features = {'feat': tf.placeholder(tf.float32, [None, feat_dim])}
     model = ICG_model(features, hyperparameters, is_train=False)
     DIR = "../model/icg"
     feat_batch = model._feat_batch
-    feat_dir = '../data/res-feat/layer514/val2014/'
+    feat_dir = '../data/res-feat/layer514/test2015/'
 if hyperparameters['model'] == 'icg_deep':    
     features = {'feat': tf.placeholder(tf.float32, [None, feat_dim])}
     model = ICG_model(features, hyperparameters, is_train=False)
     DIR = "../model/icg_deep"
     feat_batch = model._feat_batch
-    feat_dir = '../data/res-feat/layer514/val2014/'  
+    feat_dir = '../data/res-feat/layer514/test2015/'  
 if hyperparameters['model'] == 'att_icg':
     features = {'grid_feat': tf.placeholder(
         tf.float32, [None, grid_feat_dim * grid_size * grid_size])}
     model = ICG_model_att(features, hyperparameters, is_train=False)
     DIR = "../model/att_icg"
     grid_feat_batch = model._grid_feat_batch
-    feat_dir = '../data/res-feat/layer480/val2014/'    
+    feat_dir = '../data/res-feat/layer480/test2015/'    
     
 if hyperparameters['model'] == 'grid_icg':
     features = {'grid_feat': tf.placeholder(
@@ -55,7 +59,7 @@ if hyperparameters['model'] == 'grid_icg':
     DIR = "../model/grid_icg"
     grid_feat_batch = model._grid_feat_batch
     visual_concept_batch = model._visual_concept_batch
-    feat_dir = '../data/res-feat/layer480/val2014/'
+    feat_dir = '../data/res-feat/layer480/test2015/'
     
 ids = model._ids
 with tf.Session() as sess:    
@@ -64,23 +68,28 @@ with tf.Session() as sess:
     sess.run(tf.local_variables_initializer())
     saver.restore(sess, tf.train.latest_checkpoint(DIR))
     all_dict = []
+    # load a batch of image features and visual concepts
     for k in range(math.ceil(len(image_names) / batch_size)):
         image_names_batch = image_names[k*batch_size: (k+1)*batch_size]
         feats = []
         probs = []
         for image_name in image_names_batch:
             imid = str(int(image_name[14:-4]))
+            # load image region features
             feat = scipy.io.loadmat(feat_dir + 'res_' + imid + '.mat')
             feat = feat['feat'].astype(float)
             feat = numpy.reshape(feat, (-1), order = 'C')
-            feats.append(feat)           
-            prob = scipy.io.loadmat('/local-scratch/coco-vc/val2014/vc_' +
+            feats.append(feat)   
+            # load visual concepts
+            prob = scipy.io.loadmat('/local-scratch/coco-vc/test2015/vc_' +
                                     imid + '.mat')
             prob = prob['pb'].astype(float)
             prob = numpy.reshape(prob, (-1))
             probs.append(prob)           
-        feats = numpy.asarray(feats, dtype=numpy.float32)
-        probs = numpy.asarray(probs, dtype=numpy.float32)       
+        feats = numpy.asarray(feats, dtype=numpy.float32) 
+        probs = numpy.asarray(probs, dtype=numpy.float32)
+        
+        # generate captions using beam search
         if hyperparameters['model'] == 'grid_icg':
             ids_val= sess.run(ids, feed_dict = {grid_feat_batch: feats,
                                                 visual_concept_batch: probs})
@@ -90,6 +99,9 @@ with tf.Session() as sess:
             ids_val= sess.run(ids, feed_dict = {feat_batch: feats})
         if hyperparameters['model'] == 'icg_deep':
             ids_val= sess.run(ids, feed_dict = {feat_batch: feats})
+        # ids_val is a B x max_lex x BEAM_WIDTH numpy array
+        
+        # get the best caption for each image
         for l in range(len(image_names_batch)):
             image_dic = {}
             sentence = []
@@ -105,7 +117,7 @@ with tf.Session() as sess:
             image_dic['image_id'] = int(image_names_batch[l][14:-4])
             print(image_dic)
             all_dict.append(image_dic)
-    
-with open('../data/results/captions_val2014_icg_results.json', 'w') as outfile:  
-    json.dump(all_dict, outfile)
 
+# save captions     
+with open('../data/results/captions_test2015_icg_results.json', 'w') as outfile:  
+    json.dump(all_dict, outfile)
