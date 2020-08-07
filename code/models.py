@@ -1,6 +1,6 @@
 import tensorflow as tf
 from tensorflow.python.layers.core import Dense
-from tensorflow.contrib import grid_rnn
+from tensorflow.contrib import grid_rnn 
 import numpy
 
 BEAM_WIDTH = 25
@@ -218,6 +218,7 @@ class ICG_model_att:
                                                                        dtype=tf.float32))       
         attention_depth = word_emb_size            
         if not is_train:
+            # at the test time we need to tile the encoder_outputs:
             beam_width = 20
             encoder_outputs = feat_batch_proj
             tiled_encoder_outputs = tf.contrib.seq2seq.tile_batch(
@@ -232,7 +233,9 @@ class ICG_model_att:
                 init_st, multiplier=beam_width)                           
         else:
             tiled_encoder_outputs = feat_batch_proj
-            tiled_sequence_length = None   
+            tiled_sequence_length = None  
+            
+        # define decoder LSTM with an attention mechanism (Bahdanau):
         lstm = tf.nn.rnn_cell.LSTMCell(word_emb_size)       
         attention_mechanism = tf.contrib.seq2seq.BahdanauAttention(
             num_units=attention_depth, memory=tiled_encoder_outputs,
@@ -260,7 +263,9 @@ class ICG_model_att:
             training_decoder_output, AttentionWrapperState, _ = tf.contrib.seq2seq.dynamic_decode(
                 decoder = training_decoder, impute_finished = False, maximum_iterations = 100)
             training_logits = training_decoder_output.rnn_output
-
+            
+            # the sum of the negative log likelihood of the correct word at 
+            # each time step is chosen as the loss:
             lgt = training_logits
             mask = tf.cast(target_batch_dense > 0, dtype=tf.float32)
             cost = tf.nn.sparse_softmax_cross_entropy_with_logits(
@@ -268,12 +273,16 @@ class ICG_model_att:
             cost_mask = tf.multiply(mask, cost)
             cost_mask_sum = tf.reduce_sum(cost_mask, 1)
             cross_entropy = tf.reduce_mean(cost_mask_sum)
-            learning_rate = hyperparameters['learning_rate']
-            optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
             
+            # the loss is minimized
+            learning_rate = hyperparameters['learning_rate']
+            optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)            
             train_step = optimizer.minimize(cross_entropy)
             ind_tensor = tf.range(AttentionWrapperState[4].size())
+            
+            # get the attention weights for image regions
             att_w = AttentionWrapperState[4].gather(indices = ind_tensor, name=None)
+            
             info = [lgt]    
             self.__train_step = train_step
             self.__info = info
@@ -343,7 +352,7 @@ class ICG_model_att:
         return self.__all_att_weights              
 ###############################################################################
 #######################   Grid LSTM Model   ###################################
-###############################################################################                 
+###############################################################################                
 class ICG_model_grid:
     def __init__(self, features: dict, hyperparameters: dict, is_train: bool):
         batch_size = hyperparameters['batch_size']
@@ -351,25 +360,36 @@ class ICG_model_grid:
         vocab_size = hyperparameters['vocab_size']
         word_emb_size = hyperparameters['word_emb_size']
         grid_emb_size = hyperparameters['grid_emb_size']
-        grid_feat_dim = hyperparameters['grid_feat_dim']        
+        grid_feat_dim = hyperparameters['grid_feat_dim'] 
+        
+        # Create the projection layer and the word embedding matrix:
         init =  tf.constant_initializer(0.01 * numpy.random.uniform(
             -1, 1, size=(vocab_size, word_emb_size)))
         projection_layer = Dense(vocab_size, use_bias=True, kernel_initializer=init)
         projection_layer.build((vocab_size,word_emb_size))
-        emb = tf.transpose(projection_layer.trainable_weights[0]) # word_emb_size x vocab_size       
+        emb = tf.transpose(projection_layer.trainable_weights[0]) # word_emb_size x vocab_size 
+        
+        # Retrieve information from hyperparameters and a batch of tf records:
         if is_train:
             dropout_keep_rate = hyperparameters['dropout_keep_rate']
             grid_feat_batch, visual_concept_batch, caption_batch, target_batch = tf.train.shuffle_batch(
                     [features['grid_feat'], features['visual_concept'], 
                      features['caption'], features['target']],
                     batch_size=batch_size, capacity=20000, min_after_dequeue=200)
+            
+            # The caption_batch and target_batch are sparse matrices.
+            # we need to convert the to dense matrices:
             caption_batch_dense = tf.sparse_tensor_to_dense(
                 sp_input=caption_batch, default_value=0)  # B x max_len
             target_batch_dense = tf.sparse_tensor_to_dense(
-                sp_input=target_batch, default_value=0) # B x max_len           
+                sp_input=target_batch, default_value=0) # B x max_len 
+            
+            # embedding the ids of the captions:
             caption_batch_dense_emb = tf.nn.embedding_lookup(
                 emb, caption_batch_dense) # B x max_len x word_emb_size
         else:
+            # at the test time we do not have a caption, only image features
+            # and visual concepts
             grid_feat_batch = features['grid_feat']
             visual_concept_batch = features['visual_concept']
             dropout_keep_rate = 1.0
@@ -393,22 +413,26 @@ class ICG_model_grid:
         grid_feat_batch = tf.reshape(grid_feat_batch, [-1, grid_size * grid_size, grid_feat_dim]
                                      ) # B x (grid_size * grid_size) x grid_feat_dim
         
+        # project image features into a space of dimension grid_emb_size using
+        # a densely-connected layer:
         W_grid = tf.Variable(0.01 * tf.random_normal([grid_feat_dim, grid_emb_size]))
         b_grid = tf.Variable(tf.zeros([grid_emb_size]))
         feat_batch_proj = tf.tensordot(grid_feat_batch, W_grid, [[2], [0]]
                                        ) + b_grid  # B x (grid_size * grid_size) x grid_emb_size
         feat_batch_proj = tf.nn.dropout(feat_batch_proj, keep_prob=dropout_keep_rate)
         
+        
+        # apply a Grid LSTM to the image features
         grid_lstm_cell = grid_rnn.Grid2LSTMCell(grid_emb_size, use_peepholes=True,
                                                 output_is_tuple=True, state_is_tuple=True)
-        
+        # top_left_to_bottom_right:
         grid_lstm_outputs_top_left_to_bottom_right, _ = tf.nn.dynamic_rnn(
             grid_lstm_cell, feat_batch_proj, sequence_length= grid_size * grid_size * tf.ones(
                 [batch_size], dtype=tf.int32), dtype=tf.float32, scope='rnn0') 
        
         temp = tf.reshape(feat_batch_proj, [-1, grid_size, grid_size,
                               grid_emb_size])  # B x grid_size x grid_size x grid_emb_size
-
+        # top_right_to_bottom_left:
         feat_batch_proj_rev1 = tf.reverse(temp, axis=[1])
         feat_batch_proj_rev1 = tf.reshape(
             feat_batch_proj_rev1, [-1, grid_size * grid_size, grid_emb_size])
@@ -416,16 +440,15 @@ class ICG_model_grid:
             grid_lstm_cell, feat_batch_proj_rev1, sequence_length= 
             grid_size * grid_size * tf.ones([batch_size], dtype=tf.int32),
             dtype=tf.float32, scope='rnn1')
-        
+        # bottom_left_to_top_right:
         feat_batch_proj_rev2 = tf.reverse(temp, axis=[2])
         feat_batch_proj_rev2 = tf.reshape(
-            feat_batch_proj_rev2, [-1, grid_size * grid_size, grid_emb_size])
-        
+            feat_batch_proj_rev2, [-1, grid_size * grid_size, grid_emb_size])      
         grid_lstm_outputs_bottom_left_to_top_right, _ = tf.nn.dynamic_rnn(
             grid_lstm_cell, feat_batch_proj_rev2, sequence_length=
             grid_size * grid_size * tf.ones([batch_size], dtype=tf.int32),
             dtype=tf.float32, scope='rnn2')
-        
+        # bottom_right_to_top_left:
         feat_batch_proj_rev3 = tf.reverse(temp, axis=[1,2])
         feat_batch_proj_rev3 = tf.reshape(
             feat_batch_proj_rev3, [-1, grid_size * grid_size, grid_emb_size])
@@ -445,6 +468,7 @@ class ICG_model_grid:
         
         attention_depth = 512            
         if not is_train:
+            # at the test time we need to tile the encoder_outputs:
             beam_width = 20
             encoder_outputs = grid_lstm_outputs[0]
             tiled_encoder_outputs = tf.contrib.seq2seq.tile_batch(
@@ -463,7 +487,10 @@ class ICG_model_grid:
                            
         else:
             tiled_encoder_outputs = grid_lstm_outputs[0]
-            tiled_sequence_length = None   
+            tiled_sequence_length = None 
+            
+        # define decoder two-layer LSTM (first layer gets the visual concepts
+        # and the second layer gets the image features via an attention mechanism):
         cells = [lstm_decoder_first_layer]
         lstm_decoder_second_layer = tf.nn.rnn_cell.LSTMCell(word_emb_size)        
         attention_mechanism = tf.contrib.seq2seq.BahdanauAttention(
@@ -495,6 +522,9 @@ class ICG_model_grid:
             training_decoder_output, AttentionWrapperState, _ = tf.contrib.seq2seq.dynamic_decode(
                 decoder = training_decoder, impute_finished = False, maximum_iterations = 100)
             training_logits = training_decoder_output.rnn_output
+            
+            # the sum of the negative log likelihood of the correct word at 
+            # each time step is chosen as the loss:
             lgt = training_logits            
             mask = tf.cast(target_batch_dense > 0, dtype=tf.float32)
             cost = tf.nn.sparse_softmax_cross_entropy_with_logits(
@@ -502,6 +532,8 @@ class ICG_model_grid:
             cost_mask = tf.multiply(mask, cost)
             cost_mask_sum = tf.reduce_sum(cost_mask, 1)
             cross_entropy = tf.reduce_mean(cost_mask_sum)
+            
+            # the loss is minimized:
             learning_rate = hyperparameters['learning_rate']
             optimizer = tf.train.RMSPropOptimizer(learning_rate=learning_rate,
                                                   decay=0.9)           
@@ -517,6 +549,7 @@ class ICG_model_grid:
             self.__all_att_weights = att_w
             self.__caption_batch = caption_batch       
         if not is_train:
+            # at the test time use beam search to generate a caption for an image:
             true_batch_size = batch_size
             decoder_initial_state = attention_cell.zero_state(
                 dtype=tf.float32, batch_size=true_batch_size * beam_width)
@@ -533,7 +566,8 @@ class ICG_model_grid:
             outputs, AttentionWrapperState, _ = tf.contrib.seq2seq.dynamic_decode(
                 decoder, maximum_iterations=25)
             ids = outputs.predicted_ids
-            self.__ids = ids        
+            self.__ids = ids  
+            # get the attetion weights for image regions:
             self.__all_att_weights = AttentionWrapperState[0][1][5]      
         self.__W_emb = emb
         self.__visual_concept_batch = visual_concept_batch       
