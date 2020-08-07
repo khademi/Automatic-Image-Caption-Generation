@@ -1,26 +1,28 @@
 import tensorflow as tf
 from tensorflow.python.layers.core import Dense
+from tensorflow.contrib import grid_rnn
 import numpy
 
 BEAM_WIDTH = 25
 VISUAL_CONCEPT_SIZE = 1000
 class ICG_model:
     def __init__(self, features: dict, hyperparameters: dict, is_train: bool):
-        
         batch_size = hyperparameters['batch_size']
         feat_dim = hyperparameters['feat_dim']
         vocab_size = hyperparameters['vocab_size']
         word_emb_size = hyperparameters['word_emb_size']
         model = hyperparameters['model']
+        
         # Create the projection layer and the word embedding matrix:
-        init = tf.constant_initializer(0.01 * numpy.random.uniform(
-            -1, 1, size=(vocab_size, word_emb_size)))
+        init = tf.constant_initializer(
+            0.01 * numpy.random.uniform(-1, 1, size=(vocab_size, word_emb_size)))
         projection_layer = Dense(vocab_size, use_bias=True,
                                  kernel_initializer=init, activation =None,
                                  name='emb_matrix')
         projection_layer.build((vocab_size, word_emb_size))       
-        emb = tf.transpose(projection_layer.trainable_weights[0])       
-        # Retrieve information from features and hyperparameters:
+        emb = tf.transpose(projection_layer.trainable_weights[0]) 
+        
+        # Retrieve information from hyperparameters and a batch of tf records:
         if is_train:
             learning_rate = hyperparameters['learning_rate']
             dropout_keep_rate = hyperparameters['dropout_keep_rate']
@@ -28,35 +30,43 @@ class ICG_model:
                 = tf.train.shuffle_batch([features['caption'], features['target'],
                                           features['data_type'], features['im_id'],
                                           features['feat']], batch_size=batch_size,
-                                         capacity=2000, min_after_dequeue=200)    
+                                         capacity=2000, min_after_dequeue=200) 
+            # The caption_batch and target_batch are sparse matrices.
+            # we need to convert the to dense matrices:
             caption_batch_dense = tf.sparse_tensor_to_dense(
                 sp_input=caption_batch, default_value=0, validate_indices=True,
                                                       name=None) # B x max_len
             target_batch_dense = tf.sparse_tensor_to_dense(
                 sp_input=target_batch, default_value=0, validate_indices=True,
-                                                      name=None) # B x max_len          
+                                                      name=None) # B x max_len 
+            # embedding the ids of the captions:
             caption_batch_dense_emb = tf.nn.embedding_lookup(
                 emb, caption_batch_dense) # B x max_len x word_emb_size
         else:
+            # at the test time we do not have a caption, only image features
             dropout_keep_rate = 1.0
-            feat_batch = features['feat']        
+            feat_batch = features['feat']  
+        
+        # project image features into a space of dimension word_emb_size using
+        # a densely-connected layer:
         W_feat = tf.Variable(0.01 * tf.random_normal([feat_dim, word_emb_size]))
         b_feat = tf.Variable(tf.zeros([word_emb_size]))
-        feat_proj = tf.tensordot(feat_batch, W_feat, [[1], [0]]
-                                 ) + b_feat # B x word_emb_size
+        feat_proj = tf.tensordot(
+            feat_batch, W_feat, [[1], [0]]) + b_feat # B x word_emb_size
         feat_proj = tf.reshape(feat_proj,[-1, 1, word_emb_size]) # B x 1 x word_emb_size 
-        feat_proj = tf.nn.dropout(feat_proj, keep_prob=dropout_keep_rate)        
-        # Give the image features to LSTM to encode it:
+        feat_proj = tf.nn.dropout(feat_proj, keep_prob=dropout_keep_rate) 
+        
+        # encoding image features (initializing the decoder LSTM):
         if model == 'icg':    
             lstm = tf.nn.rnn_cell.LSTMCell(num_units=word_emb_size)
         if model == 'icg_deep':
             lstm1 = tf.nn.rnn_cell.LSTMCell(num_units=word_emb_size)
             lstm2 = tf.nn.rnn_cell.LSTMCell(num_units=word_emb_size)           
-            lstm = tf.contrib.rnn.MultiRNNCell([lstm1, lstm2], state_is_tuple=True) 
-        
+            lstm = tf.contrib.rnn.MultiRNNCell([lstm1, lstm2], state_is_tuple=True)         
         _, encoder_final_state = tf.nn.dynamic_rnn(lstm, feat_proj, dtype=tf.float32)    
         if is_train:
-            # Give the last output of the encoder as an input to the decoder:
+            # training the decoder: give the last output of the encoder as an
+            # input to the decoder:
             training_helper = tf.contrib.seq2seq.TrainingHelper(
                 inputs = caption_batch_dense_emb, sequence_length = tf.shape(
                     caption_batch_dense_emb)[1] * tf.ones(
@@ -70,16 +80,18 @@ class ICG_model:
                 decoder = training_decoder, impute_finished = False, 
                 maximum_iterations = 100)
             training_logits = training_decoder_output.rnn_output
-            probs = tf.nn.softmax(training_logits)  # B x max_len x vocab_size            
-            # Compare the estimated result with the ground truth:
+            probs = tf.nn.softmax(training_logits)  # B x max_len x vocab_size 
+            
+            # the sum of the negative log likelihood of the correct word at 
+            # each time step is chosen as the loss:
             cost = tf.nn.sparse_softmax_cross_entropy_with_logits(
                 labels=target_batch_dense, logits=training_logits)
-            mask = tf.cast(target_batch_dense > 0, dtype=tf.float32)
-            
+            mask = tf.cast(target_batch_dense > 0, dtype=tf.float32)           
             cost_mask = tf.multiply(mask, cost)
             cost_mask_sum = tf.reduce_sum(cost_mask, 1) # B x 1
             cross_entropy = tf.reduce_mean(cost_mask_sum) # 1
             
+            # the loss is minimized using RMSprop:
             optimizer = tf.train.RMSPropOptimizer(learning_rate=learning_rate,
                                                   decay=0.9)
             train_step = optimizer.minimize(cross_entropy)
@@ -89,7 +101,7 @@ class ICG_model:
             self.__probs = probs
             self.__caption_batch = caption_batch            
         else:
-            # Use beamsearch to generate a caption for a test image:
+            # at the test time use beam search to generate a caption for an image:
             tiled_encoder_final_state = tf.contrib.seq2seq.tile_batch(
                 encoder_final_state, multiplier= BEAM_WIDTH)   
             start_tokens = tf.zeros([tf.shape(feat_batch)[0]], dtype=tf.int32)
@@ -105,45 +117,45 @@ class ICG_model:
         self.__W_emb = emb
         self.__info = encoder_final_state      
        
-    # @property Decorators:
+    # @property decorators:
     @property
     def _train_step(self):
-        return (self.__train_step)
+        return self.__train_step
 
     @property
     def _cross_entropy(self):
-        return (self.__cross_entropy)
+        return self.__cross_entropy
     
     @property
     def _logits(self):
-        return (self.__logits)
+        return self.__logits
 
     @property
     def _W_emb(self):
-        return (self.__W_emb)
+        return self.__W_emb
 
     @property
     def _probs(self):
-        return (self.__probs)
+        return self.__probs
 
     @property
     def _feat_batch(self):
-        return (self.__feat_batch)
+        return self.__feat_batch
 
     @property
     def _info(self):
-        return (self.__info)
+        return self.__info
 
     @property
     def _caption_batch(self):
-        return (self.__caption_batch)
+        return self.__caption_batch
     
     @property
     def _ids(self):
-        return (self.__ids)
+        return self.__ids
     @property
     def _scores(self):
-        return (self.__scores)
+        return self.__scores
 ###############################################################################
 #######################   Attention Model   ###################################
 ###############################################################################
@@ -153,38 +165,51 @@ class ICG_model_att:
         grid_size = hyperparameters['grid_size']
         vocab_size = hyperparameters['vocab_size']
         word_emb_size = hyperparameters['word_emb_size']
+        
+        # Create the projection layer and the word embedding matrix:
         init =  tf.constant_initializer(0.01 * numpy.random.uniform(
             -1, 1, size=(vocab_size, word_emb_size)))
         projection_layer = Dense(vocab_size, use_bias=True, kernel_initializer=init)
         projection_layer.build((vocab_size,word_emb_size))
         emb = tf.transpose(projection_layer.trainable_weights[0])
+        
+        # Retrieve information from hyperparameters and a batch of tf records:
         if is_train:
             grid_feat_batch, caption_batch, target_batch = tf.train.shuffle_batch(
                 [features['grid_feat'], features['caption'], features['target']],
                 batch_size=batch_size, capacity=20000, min_after_dequeue=200)
+            dropout_keep_rate = hyperparameters['dropout_keep_rate']
+            
+            # The caption_batch and target_batch are sparse matrices
+            # we need to convert the to dense matrices:
             caption_batch_dense = tf.sparse_tensor_to_dense(
                 sp_input=caption_batch, default_value=0, validate_indices=True)
             target_batch_dense = tf.sparse_tensor_to_dense(
                 sp_input=target_batch, default_value=0, validate_indices=True)
-            dropout_keep_rate = hyperparameters['dropout_keep_rate']
+            
+            # embedding the ids of the captions:
             caption_batch_dense_emb = tf.nn.embedding_lookup(
                 emb, caption_batch_dense) # B x max_len x word_emb_size
         else:
+            # at the test time we do not have a caption, only image features
             grid_feat_batch = features['grid_feat']
             dropout_keep_rate = 1.0
         
         grid_emb_size = hyperparameters['grid_emb_size']
         grid_feat_dim = hyperparameters['grid_feat_dim']
                 
-        self.__grid_feat_batch = grid_feat_batch # B x (14 * 14 * 1024)
+        self.__grid_feat_batch = grid_feat_batch # B x (grid_size * grid_size * 1024)
         grid_feat_batch = tf.reshape(
             grid_feat_batch, [-1, grid_size * grid_size,
                               grid_feat_dim]) # B x (grid_size * grid_size) x grid_feat_dim
+        
+        # project image region features into a space of dimension word_emb_size
+        # using a densely-connected layer:
         W_grid = tf.Variable(0.01 * tf.random_normal([grid_feat_dim, grid_emb_size]))
         b_grid = tf.Variable(tf.zeros([grid_emb_size]))
-
         feat_batch_proj = tf.tensordot(grid_feat_batch, W_grid, [[2], [0]]
                                        ) + b_grid  # B x (grid_size * grid_size) x grid_emb_size
+        # Adds a Layer Normalization layer:
         feat_batch_proj = tf.contrib.layers.layer_norm(feat_batch_proj)
         feat_batch_proj = tf.nn.dropout(feat_batch_proj, keep_prob=dropout_keep_rate)
         
@@ -218,6 +243,7 @@ class ICG_model_att:
         attention_cell = tf.contrib.rnn.DropoutWrapper(
             attention_cell, output_keep_prob=dropout_keep_rate)    
         if is_train:
+            # training the decoder:
             training_helper = tf.contrib.seq2seq.TrainingHelper(
                 inputs = caption_batch_dense_emb, sequence_length = tf.shape(
                     caption_batch_dense_emb)[1] * tf.ones(
@@ -256,6 +282,7 @@ class ICG_model_att:
             self.__all_att_weights = att_w
             self.__caption_batch = caption_batch        
         if not is_train:
+            # at the test time use beam search to generate a caption for an image:
             true_batch_size = batch_size
             decoder_initial_state = attention_cell.zero_state(
                 dtype=tf.float32, batch_size=true_batch_size * beam_width)
@@ -277,47 +304,46 @@ class ICG_model_att:
 
     @property
     def _train_step(self):
-        return (self.__train_step)
+        return self.__train_step
 
     @property
     def _cross_entropy(self):
-        return (self.__cross_entropy)
+        return self.__cross_entropy
     
     @property
     def _logits(self):
-        return (self.__logits)
+        return self.__logits
 
     @property
     def _W_emb(self):
-        return (self.__W_emb)
+        return self.__W_emb
 
     @property
     def _grid_feat_batch(self):
-        return (self.__grid_feat_batch)
+        return self.__grid_feat_batch
     
     @property
     def _info(self):
-        return (self.__info)   
+        return self.__info   
 
     @property
     def _caption_batch(self):
-        return (self.__caption_batch)
+        return self.__caption_batch
     
     @property
     def _ids(self):
-        return (self.__ids) 
+        return self.__ids 
     
     @property
     def _scores(self):
-        return (self.__scores)
+        return self.__scores
 
     @property
     def _all_att_weights(self):
-        return (self.__all_att_weights)              
+        return self.__all_att_weights              
 ###############################################################################
 #######################   Grid LSTM Model   ###################################
-###############################################################################          
-from tensorflow.contrib import grid_rnn       
+###############################################################################                 
 class ICG_model_grid:
     def __init__(self, features: dict, hyperparameters: dict, is_train: bool):
         batch_size = hyperparameters['batch_size']
@@ -380,8 +406,7 @@ class ICG_model_grid:
             grid_lstm_cell, feat_batch_proj, sequence_length= grid_size * grid_size * tf.ones(
                 [batch_size], dtype=tf.int32), dtype=tf.float32, scope='rnn0') 
        
-        temp = tf.reshape(
-            feat_batch_proj, [-1, grid_size, grid_size,
+        temp = tf.reshape(feat_batch_proj, [-1, grid_size, grid_size,
                               grid_emb_size])  # B x grid_size x grid_size x grid_emb_size
 
         feat_batch_proj_rev1 = tf.reverse(temp, axis=[1])
@@ -450,7 +475,7 @@ class ICG_model_grid:
         cells.append(attention_cell)           
         decoder_cell = tf.contrib.rnn.MultiRNNCell(cells, state_is_tuple=True)   
         if is_train:
-            # TRAINING DECODER
+            # training the decoder:
             # https://www.tensorflow.org/api_guides/python/contrib.seq2seq
             training_helper = tf.contrib.seq2seq.TrainingHelper(
                 inputs = caption_batch_dense_emb, sequence_length = 
@@ -514,44 +539,44 @@ class ICG_model_grid:
         self.__visual_concept_batch = visual_concept_batch       
     @property
     def _train_step(self):
-        return (self.__train_step)
+        return self.__train_step
 
     @property
     def _cross_entropy(self):
-        return (self.__cross_entropy)
+        return self.__cross_entropy
     
     @property
     def _logits(self):
-        return (self.__logits)
+        return self.__logits
 
     @property
     def _W_emb(self):
-        return (self.__W_emb)
+        return self.__W_emb
 
     @property
     def _grid_feat_batch(self):
-        return (self.__grid_feat_batch)
+        return self.__grid_feat_batch
     
     @property
     def _info(self):
-        return (self.__info)   
+        return self.__info   
 
     @property
     def _caption_batch(self):
-        return (self.__caption_batch)
+        return self.__caption_batch
     
     @property
     def _ids(self):
-        return (self.__ids) 
+        return self.__ids 
     
     @property
     def _scores(self):
-        return (self.__scores)
+        return self.__scores
 
     @property
     def _visual_concept_batch(self):
-        return (self.__visual_concept_batch)
+        return self.__visual_concept_batch
     
     @property
     def _all_att_weights(self):
-        return (self.__all_att_weights)    
+        return self.__all_att_weights    
