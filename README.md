@@ -98,7 +98,7 @@ Run tf-icg-train.py
 **Directory Tree**  
 .  
 ├── code  
-│   ├── caption_coco.py  
+│   ├── create_vocab.py  
 │   ├── coco-caption-master  
 │   │   └── eval.py  
 │   ├── icg-vis.ipynb  
@@ -107,7 +107,7 @@ Run tf-icg-train.py
 │   ├── README.md  
 │   ├── region-grounded.py  
 │   ├── resnet_feat.m  
-│   ├── tf-icg.py  
+│   ├── create_tfrecord.py  
 │   ├── tf-icg-test.py  
 │   ├── tf-icg-train.py  
 ├── data  
